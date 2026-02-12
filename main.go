@@ -2,13 +2,14 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/url"
 	"time"
-	"fmt"
 
 	"github.com/gorilla/websocket"
 )
+
 type AuthMessage struct {
 	Type string `json:"type"`
 }
@@ -16,10 +17,10 @@ type AuthMessage struct {
 type BotAuth struct {
 	AuthMessage
 	Password string `json:"password"`
-	Name string`json:"name"`
-	ID int `json: "id"`
-	CamID string`json: "camId"`
-	CamName string `json: "camName"`
+	Name     string `json:"name"`
+	ID       int    `json:"id"`
+	CamID    string `json:"camId"`
+	CamName  string `json:"camName"`
 }
 
 type Message struct {
@@ -28,7 +29,7 @@ type Message struct {
 }
 
 func main() {
-	u := url.URL{Scheme: "ws", Host: "192.168.0.141:47000", Path: "/ws"}
+	u := url.URL{Scheme: "ws", Host: "localhost:47000", Path: "/ws"}
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		log.Fatal(err)
@@ -36,17 +37,19 @@ func main() {
 	defer conn.Close()
 
 	// Send register event
-	auth := BotAuth {
-		AuthMessage: AuthMessage{Type: "bot"},
-		Password: "secret",
-		Name: "Bot123",
-		ID: 123,
-		CamID: "cam123",
-		CamName: "Front Cam",
+	auth := &BotAuth{
+		AuthMessage: AuthMessage{Type: "bot"}, // must match embedded field name
+		Password:    "secret",
+		Name:        "Bot123",
+		ID:          123,
+		CamID:       "cam123",
+		CamName:     "Front Cam",
 	}
 
-
-	
+	message := Message{
+		Event: "registerBot",
+		Data:  auth,
+	}
 
 	// Periodic telemetry
 	for {
@@ -58,10 +61,10 @@ func main() {
 		//	},
 		//}
 
-		b, _ := json.Marshal(auth)
-		
+		b, _ := json.Marshal(message)
+
 		fmt.Println(string(b))
-		conn.WriteJSON(auth)
+		conn.WriteJSON(message)
 
 		time.Sleep(5 * time.Second)
 	}
