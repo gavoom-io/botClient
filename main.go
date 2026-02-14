@@ -50,21 +50,23 @@ func main() {
 		Event: "registerBot",
 		Data:  auth,
 	}
+	conn.WriteJSON(message)
 
 	// Periodic telemetry
 	for {
-		//telemetryMsg := Message{
-		//	Event: "telemetry",
-		//	Data: map[string]interface{}{
-		//		"temperature": 24.5,
-		//		"battery":     87,
-		//	},
-		//}
+		telemetryMsg := Message{
+			Event: "telemetry",
+			Data: map[string]interface{}{
+				"type":        "bot",
+				"temperature": 24.5,
+				"battery":     87,
+			},
+		}
 
-		b, _ := json.Marshal(message)
+		b, _ := json.Marshal(telemetryMsg)
+		conn.WriteJSON(telemetryMsg)
 
 		fmt.Println(string(b))
-		conn.WriteJSON(message)
 
 		time.Sleep(5 * time.Second)
 	}
