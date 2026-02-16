@@ -2,16 +2,20 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/url"
-	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/webrtc/v3"
 )
 
 type AuthMessage struct {
 	Type string `json:"type"`
+}
+
+type WSMessage struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
 }
 
 type BotAuth struct {
@@ -40,8 +44,8 @@ func main() {
 	auth := &BotAuth{
 		AuthMessage: AuthMessage{Type: "bot"}, // must match embedded field name
 		Password:    "secret",
-		Name:        "Bot123",
-		ID:          123,
+		Name:        "device1",
+		ID:          3,
 		CamID:       "cam123",
 		CamName:     "Front Cam",
 	}
@@ -52,22 +56,66 @@ func main() {
 	}
 	conn.WriteJSON(message)
 
+	m := &webrtc.MediaEngine{}
+	m.RegisterCodec(webrtc.RTPCodecParameters{
+		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: "video/h264", ClockRate: 90000},
+		PayloadType:        102,
+	}, webrtc.RTPCodecTypeVideo)
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(m))
+
+	// Create PeerConnection
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Create H264 video track
+	videoTrack, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: "video/h264"}, "video", "pion-h264",
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	_, err = pc.AddTrack(videoTrack)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	offer, _ := pc.CreateOffer(nil)
+	pc.SetLocalDescription(offer)
+
+	offerMessage := Message{
+		Event: "webrtcOffer",
+		Data:  offer,
+	}
+
+	conn.WriteJSON(offerMessage)
+
 	// Periodic telemetry
 	for {
-		telemetryMsg := Message{
-			Event: "telemetry",
-			Data: map[string]interface{}{
-				"type":        "bot",
-				"temperature": 24.5,
-				"battery":     87,
-			},
+		_, msgBytes, err := conn.ReadMessage()
+		if err != nil {
+			log.Println("ReadMessage error:", err)
 		}
+		var msg WSMessage
+		json.Unmarshal(msgBytes, &msg)
 
-		b, _ := json.Marshal(telemetryMsg)
-		conn.WriteJSON(telemetryMsg)
+		switch msg.Type {
+		case "answer":
+			var answer webrtc.SessionDescription
+			json.Unmarshal(msg.Payload, &answer)
+			pc.SetRemoteDescription(answer)
 
-		fmt.Println(string(b))
+		case "ice":
+			var ice webrtc.ICECandidateInit
+			json.Unmarshal(msg.Payload, &ice)
+			pc.AddICECandidate(ice)
 
-		time.Sleep(5 * time.Second)
+		case "control":
+			var ctrl map[string]string
+			json.Unmarshal(msg.Payload, &ctrl)
+			log.Println("Received control:", ctrl["command"])
+		}
 	}
 }
