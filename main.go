@@ -7,10 +7,10 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/mediadevices"
-	"github.com/pion/mediadevices/pkg/codec/mmal"
 	_ "github.com/pion/mediadevices/pkg/driver/camera" // camera driver
 	"github.com/pion/mediadevices/pkg/prop"
 	"github.com/pion/webrtc/v4"
+	"github.com/pion/mediadevices/pkg/codec/x264"
 )
 
 type AuthMessage struct {
@@ -41,9 +41,15 @@ type WebRTCOfferData struct {
 	SDP         webrtc.SessionDescription `json:"sdp"`
 }
 
+func must (err error) {
+	if err != nil {
+		panic(err)
+	}
+}
+
 func main() {
 	// --- Connect WebSocket ---
-	u := url.URL{Scheme: "ws", Host: "localhost:47000", Path: "/ws"}
+	u := url.URL{Scheme: "ws", Host: "192.168.0.141:47000", Path: "/ws"}
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
 		log.Fatal("WebSocket dial:", err)
@@ -75,16 +81,26 @@ func main() {
 	}
 
 	// --- Capture camera stream with H.264 ---
+	
+	x264Params, err := x264.NewParams()
+	must(err)
+	x264Params.Preset = x264.PresetMedium
+	x264Params.BitRate = 1_000_000
+	
+	codecSelector := mediadevices.NewCodecSelector(
+	mediadevices.WithVideoEncoders(&x264Params),
+	)
+	
 	stream, err := mediadevices.GetUserMedia(mediadevices.MediaStreamConstraints{
 		Video: func(c *mediadevices.MediaTrackConstraints) {
 			c.Width = prop.Int(640)
 			c.Height = prop.Int(480)
 			c.FrameRate = prop.Float(30)
 		},
-		Codec: mediadevices.NewCodecSelector(
-			mediadevices.WithVideoEncoders(&mmal.Params{}),
-		),
+		Codec: codecSelector,
 	})
+	
+	must(err)
 	if err != nil {
 		log.Fatal("GetUserMedia:", err)
 	}

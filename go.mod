@@ -3,13 +3,13 @@ module botClient
 go 1.24.2
 
 require (
+	github.com/blackjack/webcam v0.6.1
 	github.com/gorilla/websocket v1.5.3
 	github.com/pion/mediadevices v0.9.4
 	github.com/pion/webrtc/v4 v4.2.9
 )
 
 require (
-	github.com/blackjack/webcam v0.6.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/pion/datachannel v1.6.0 // indirect
 	github.com/pion/dtls/v3 v3.1.2 // indirect
