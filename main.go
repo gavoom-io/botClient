@@ -26,7 +26,7 @@ type BotAuth struct {
 	AuthMessage
 	Password string `json:"password"`
 	Name     string `json:"name"`
-	ID       int    `json:"id"`
+	ID       string `json:"id"`
 	CamID    string `json:"camId"`
 	CamName  string `json:"camName"`
 }
@@ -60,8 +60,8 @@ func main() {
 	auth := &BotAuth{
 		AuthMessage: AuthMessage{Type: "bot"},
 		Password:    "secret",
-		Name:        "device1",
-		ID:          3,
+		Name:        "test",
+		ID:          "09eb14ea-6b5f-42ce-b5ca-83e24ef5a828",
 		CamID:       "cam123",
 		CamName:     "Front Cam",
 	}
