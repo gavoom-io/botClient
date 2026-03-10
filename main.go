@@ -47,6 +47,62 @@ func must (err error) {
 	}
 }
 
+type SDPPayload struct {
+    UserID string `json:"userId"`
+    SDP    struct {
+        Type string `json:"type"`
+        SDP  string `json:"sdp"`
+    } `json:"sdp"`
+}
+
+
+
+func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage) {
+log.Println("Raw Offer data:", string(data))    
+
+    var payload SDPPayload
+    
+
+    if err := json.Unmarshal(data, &payload); err != nil {
+        log.Println("failed to unmarshal sdp offer from client")
+        return
+    }
+
+    offerType := webrtc.NewSDPType(payload.SDP.Type)
+
+    offer := webrtc.SessionDescription{
+        Type: offerType,
+        SDP:  payload.SDP.SDP,
+    }
+
+    if err := pc.SetRemoteDescription(offer); err != nil {
+        log.Println("SetRemoteDescription error:", err)
+        return
+    }
+    answer, err := pc.CreateAnswer(nil)
+    if err != nil {
+        log.Println("CreateAnswer error:", err)
+        return
+    }
+    if err := pc.SetLocalDescription(answer); err != nil {
+        log.Println("SetLocalDescription error:", err)
+        return
+    }
+
+    log.Println("Created device answer for user", payload.UserID)
+
+    log.Println("received requestOffer for user", payload.SDP)
+
+    conn.WriteJSON(Message{
+        Event: "deviceAnswer",
+        Data: WebRTCOfferData{
+            AuthMessage: AuthMessage{Type: "bot"},
+            SDP: *pc.LocalDescription(),
+        },
+    })
+}
+
+
 func main() {
 	// --- Connect WebSocket ---
 	u := url.URL{Scheme: "ws", Host: "192.168.0.141:47000", Path: "/ws"}
@@ -85,7 +141,7 @@ func main() {
 	x264Params, err := x264.NewParams()
 	must(err)
 	x264Params.Preset = x264.PresetMedium
-	x264Params.BitRate = 1_000_000
+	x264Params.BitRate = 500_000
 	
 	codecSelector := mediadevices.NewCodecSelector(
 	mediadevices.WithVideoEncoders(&x264Params),
@@ -122,23 +178,6 @@ func main() {
 		log.Println("Command received:", string(msg.Data))
 	})
 
-	// --- Create offer ---
-	offer, err := pc.CreateOffer(nil)
-	if err != nil {
-		log.Fatal("CreateOffer:", err)
-	}
-	if err := pc.SetLocalDescription(offer); err != nil {
-		log.Fatal("SetLocalDescription:", err)
-	}
-
-	conn.WriteJSON(Message{
-		Event: "webrtcOffer",
-		Data: WebRTCOfferData{
-			AuthMessage: AuthMessage{Type: "bot"},
-			SDP:         offer,
-		},
-	})
-
 	// --- WebSocket listener ---
 	for {
 		_, msgBytes, err := conn.ReadMessage()
@@ -154,6 +193,8 @@ func main() {
 		}
 
 		switch ws.Event {
+		case "requestOffer":
+			handleRequestOffer(pc,conn,  ws.Data)
 		case "webrtcAnswer":
 			var answer webrtc.SessionDescription
 			json.Unmarshal(ws.Data, &answer)
@@ -166,6 +207,6 @@ func main() {
 			var ctrl map[string]string
 			json.Unmarshal(ws.Data, &ctrl)
 			log.Println("Control command:", ctrl["command"])
-		}
 	}
+}
 }
