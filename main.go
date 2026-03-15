@@ -39,6 +39,8 @@ type Message struct {
 type WebRTCOfferData struct {
 	AuthMessage AuthMessage               `json:"auth"`
 	SDP         webrtc.SessionDescription `json:"sdp"`
+        UserId      string                    `json:"userId"`
+        BotId       string                    `json:"botId"`
 }
 
 func must (err error) {
@@ -57,7 +59,7 @@ type SDPPayload struct {
 
 
 
-func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage) {
+func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage,BotId string) {
 log.Println("Raw Offer data:", string(data))    
 
     var payload SDPPayload
@@ -97,6 +99,8 @@ log.Println("Raw Offer data:", string(data))
         Event: "deviceAnswer",
         Data: WebRTCOfferData{
             AuthMessage: AuthMessage{Type: "bot"},
+            UserId: payload.UserID,
+            BotId:BotId, 
             SDP: *pc.LocalDescription(),
         },
     })
@@ -194,7 +198,7 @@ func main() {
 
 		switch ws.Event {
 		case "requestOffer":
-			handleRequestOffer(pc,conn,  ws.Data)
+			handleRequestOffer(pc,conn,ws.Data,auth.ID)
 		case "webrtcAnswer":
 			var answer webrtc.SessionDescription
 			json.Unmarshal(ws.Data, &answer)
