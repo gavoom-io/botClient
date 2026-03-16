@@ -1,3 +1,4 @@
+
 package main
 
 import (
@@ -57,6 +58,12 @@ type SDPPayload struct {
     } `json:"sdp"`
 }
 
+type ICECandidateMessage struct  {
+    BotID  string `json:"botId"` 
+    UserID string `json:"userId"`
+    AuthMessage AuthMessage
+    Candidate webrtc.ICECandidateInit
+}
 
 
 func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage,BotId string) {
@@ -106,6 +113,8 @@ log.Println("Raw Offer data:", string(data))
     })
 }
 
+var botId = "09eb14ea-6b5f-42ce-b5ca-83e24ef5a828"
+
 
 func main() {
 	// --- Connect WebSocket ---
@@ -121,7 +130,7 @@ func main() {
 		AuthMessage: AuthMessage{Type: "bot"},
 		Password:    "secret",
 		Name:        "test",
-		ID:          "09eb14ea-6b5f-42ce-b5ca-83e24ef5a828",
+		ID:           botId,
 		CamID:       "cam123",
 		CamName:     "Front Cam",
 	}
@@ -139,6 +148,24 @@ func main() {
 	if err != nil {
 		log.Fatal("NewPeerConnection:", err)
 	}
+
+        pc.OnICECandidate(func (c *webrtc.ICECandidate){
+          if c == nil {
+           return
+          } 
+
+          msg := ICECandidateMessage {
+            BotID: botId,
+            Candidate: c.ToJSON(),
+          }
+       
+           b, _ := json.Marshal(msg)
+          
+          conn.WriteJSON(WSMessage {
+            Event:"iceCandidate",
+            Data: b,
+          })
+        })
 
 	// --- Capture camera stream with H.264 ---
 	
