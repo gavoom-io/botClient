@@ -231,9 +231,25 @@ func main() {
 			json.Unmarshal(ws.Data, &answer)
 			pc.SetRemoteDescription(answer)
 		case "ice":
-			var ice webrtc.ICECandidateInit
-			json.Unmarshal(ws.Data, &ice)
-			pc.AddICECandidate(ice)
+                       var msg ICECandidateMessage
+                      if err := json.Unmarshal(ws.Data, &msg); err != nil {
+                       log.Println("Failed to unmarshal ICE message:", err)
+                       return
+                      }
+
+                     // Now add candidate to the right PeerConnection
+                     botId := msg.BotID
+                      // map of botId -> *webrtc.PeerConnection
+                    if pc == nil {
+                     log.Println("PeerConnection not found for bot:", botId)
+                    return
+                      } 
+
+    if err := pc.AddICECandidate(msg.Candidate); err != nil {
+        log.Println("Failed to add ICE candidate:", err)
+    } else {
+        log.Println("Added ICE candidate for bot", botId)
+    }
 		case "control":
 			var ctrl map[string]string
 			json.Unmarshal(ws.Data, &ctrl)
