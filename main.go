@@ -1,259 +1,233 @@
-
 package main
 
 import (
-	"encoding/json"
-	"log"
-	"net/url"
+"encoding/json"
+"log"
+"net/url"
 
-	"github.com/gorilla/websocket"
-	"github.com/pion/mediadevices"
-	_ "github.com/pion/mediadevices/pkg/driver/camera" // camera driver
-	"github.com/pion/mediadevices/pkg/prop"
-	"github.com/pion/webrtc/v4"
-	"github.com/pion/mediadevices/pkg/codec/x264"
+"github.com/gorilla/websocket"
+"github.com/pion/mediadevices"
+_ "github.com/pion/mediadevices/pkg/driver/camera"
+"github.com/pion/mediadevices/pkg/codec/vpx"
+"github.com/pion/mediadevices/pkg/prop"
+"github.com/pion/webrtc/v4"
 )
 
 type AuthMessage struct {
-	Type string `json:"type"`
+Type string `json:"type"`
 }
 
 type WSMessage struct {
-	Event string          `json:"event"`
-	Data  json.RawMessage `json:"data"`
+Event string          `json:"event"`
+Data  json.RawMessage `json:"data"`
 }
 
 type BotAuth struct {
-	AuthMessage
-	Password string `json:"password"`
-	Name     string `json:"name"`
-	ID       string `json:"id"`
-	CamID    string `json:"camId"`
-	CamName  string `json:"camName"`
+AuthMessage
+Password string `json:"password"`
+Name     string `json:"name"`
+ID       string `json:"id"`
+CamID    string `json:"camId"`
+CamName  string `json:"camName"`
 }
 
 type Message struct {
-	Event string      `json:"event"`
-	Data  interface{} `json:"data"`
+Event string      `json:"event"`
+Data  interface{} `json:"data"`
 }
 
 type WebRTCOfferData struct {
-	AuthMessage AuthMessage               `json:"auth"`
-	SDP         webrtc.SessionDescription `json:"sdp"`
-        UserId      string                    `json:"userId"`
-        BotId       string                    `json:"botId"`
-}
-
-func must (err error) {
-	if err != nil {
-		panic(err)
-	}
+AuthMessage AuthMessage               `json:"auth"`
+SDP         webrtc.SessionDescription `json:"sdp"`
+UserId      string                    `json:"userId"`
+BotId       string                    `json:"botId"`
 }
 
 type SDPPayload struct {
-    UserID string `json:"userId"`
-    SDP    struct {
-        Type string `json:"type"`
-        SDP  string `json:"sdp"`
-    } `json:"sdp"`
+UserID string `json:"userId"`
+SDP    struct {
+Type string `json:"type"`
+SDP  string `json:"sdp"`
+} `json:"sdp"`
 }
 
-type ICECandidateMessage struct  {
-    BotID  string `json:"botId"` 
-    UserID string `json:"userId"`
-    AuthMessage AuthMessage
-    Candidate webrtc.ICECandidateInit
+type ICECandidateMessage struct {
+BotID     string                  `json:"botId"`
+UserID    string                  `json:"userId"`
+Candidate webrtc.ICECandidateInit `json:"candidate"`
 }
 
-
-func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage,BotId string) {
-log.Println("Raw Offer data:", string(data))    
-
-    var payload SDPPayload
-    
-
-    if err := json.Unmarshal(data, &payload); err != nil {
-        log.Println("failed to unmarshal sdp offer from client")
-        return
-    }
-
-    offerType := webrtc.NewSDPType(payload.SDP.Type)
-
-    offer := webrtc.SessionDescription{
-        Type: offerType,
-        SDP:  payload.SDP.SDP,
-    }
-
-    if err := pc.SetRemoteDescription(offer); err != nil {
-        log.Println("SetRemoteDescription error:", err)
-        return
-    }
-    answer, err := pc.CreateAnswer(nil)
-    if err != nil {
-        log.Println("CreateAnswer error:", err)
-        return
-    }
-    if err := pc.SetLocalDescription(answer); err != nil {
-        log.Println("SetLocalDescription error:", err)
-        return
-    }
-
-    log.Println("Created device answer for user", payload.UserID)
-
-    log.Println("received requestOffer for user", payload.SDP)
-
-    conn.WriteJSON(Message{
-        Event: "deviceAnswer",
-        Data: WebRTCOfferData{
-            AuthMessage: AuthMessage{Type: "bot"},
-            UserId: payload.UserID,
-            BotId:BotId, 
-            SDP: *pc.LocalDescription(),
-        },
-    })
+func must(err error) {
+if err != nil {
+panic(err)
+}
 }
 
 var botId = "09eb14ea-6b5f-42ce-b5ca-83e24ef5a828"
 
+func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage, botId string) {
+if pc == nil {
+log.Println("ERROR: pc is nil!")
+return
+}
+
+var payload SDPPayload
+if err := json.Unmarshal(data, &payload); err != nil {
+log.Println("failed to unmarshal sdp offer:", err)
+return
+}
+
+offer := webrtc.SessionDescription{
+Type: webrtc.NewSDPType(payload.SDP.Type),
+SDP:  payload.SDP.SDP,
+}
+
+if err := pc.SetRemoteDescription(offer); err != nil {
+log.Println("SetRemoteDescription error:", err)
+return
+}
+
+answer, err := pc.CreateAnswer(nil)
+if err != nil {
+log.Println("CreateAnswer error:", err)
+return
+}
+
+gatherComplete := webrtc.GatheringCompletePromise(pc)
+
+if err := pc.SetLocalDescription(answer); err != nil {
+log.Println("SetLocalDescription error:", err)
+return
+}
+
+log.Println("waiting for ICE gathering...")
+<-gatherComplete
+log.Println("sending answer")
+
+conn.WriteJSON(Message{
+Event: "deviceAnswer",
+Data: WebRTCOfferData{
+AuthMessage: AuthMessage{Type: "bot"},
+UserId:      payload.UserID,
+BotId:       botId,
+SDP:         *pc.LocalDescription(),
+},
+})
+}
 
 func main() {
-	// --- Connect WebSocket ---
-	u := url.URL{Scheme: "ws", Host: "192.168.0.141:47000", Path: "/ws"}
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		log.Fatal("WebSocket dial:", err)
-	}
-	defer conn.Close()
+// enumerate devices
+devices := mediadevices.EnumerateDevices()
+for _, d := range devices {
+log.Printf("device: %s | kind: %v | id: %s\n", d.Label, d.Kind, d.DeviceID)
+}
 
-	// --- Register bot ---
-	auth := &BotAuth{
-		AuthMessage: AuthMessage{Type: "bot"},
-		Password:    "secret",
-		Name:        "test",
-		ID:           botId,
-		CamID:       "cam123",
-		CamName:     "Front Cam",
-	}
-	conn.WriteJSON(Message{Event: "registerBot", Data: auth})
+// codec setup
+vp8Params, err := vpx.NewVP8Params()
+must(err)
+vp8Params.BitRate = 500_000
+codecSelector := mediadevices.NewCodecSelector(
+mediadevices.WithVideoEncoders(&vp8Params),
+)
+m := &webrtc.MediaEngine{}
+codecSelector.Populate(m)
 
-	// --- WebRTC setup ---
-	m := &webrtc.MediaEngine{}
-	m.RegisterCodec(webrtc.RTPCodecParameters{
-		RTPCodecCapability: webrtc.RTPCodecCapability{MimeType: "video/h264", ClockRate: 90000},
-		PayloadType:        96,
-	}, webrtc.RTPCodecTypeVideo)
+// peer connection
+api := webrtc.NewAPI(webrtc.WithMediaEngine(m))
+pc, err := api.NewPeerConnection(webrtc.Configuration{
+ICEServers: []webrtc.ICEServer{
+{URLs: []string{"stun:stun.l.google.com:19302"}},
+},
+})
+must(err)
 
-	api := webrtc.NewAPI(webrtc.WithMediaEngine(m))
-	pc, err := api.NewPeerConnection(webrtc.Configuration{})
-	if err != nil {
-		log.Fatal("NewPeerConnection:", err)
-	}
+// camera
+stream, err := mediadevices.GetUserMedia(mediadevices.MediaStreamConstraints{
+Video: func(c *mediadevices.MediaTrackConstraints) {
+c.Width = prop.Int(320)
+c.Height = prop.Int(240)
+c.FrameRate = prop.Float(15)
+},
+Codec: codecSelector,
+})
+must(err)
+log.Println("got user media, tracks:", len(stream.GetVideoTracks()))
 
-        pc.OnICECandidate(func (c *webrtc.ICECandidate){
-          if c == nil {
-           return
-          } 
+for _, t := range stream.GetVideoTracks() {
+_, err := pc.AddTrack(t)
+must(err)
+log.Println("added track:", t.ID())
+}
 
-          msg := ICECandidateMessage {
-            BotID: botId,
-            Candidate: c.ToJSON(),
-          }
-       
-           b, _ := json.Marshal(msg)
-          
-          conn.WriteJSON(WSMessage {
-            Event:"iceCandidate",
-            Data: b,
-          })
-        })
+// websocket — declared here so OnICECandidate closure can use it
+u := url.URL{Scheme: "ws", Host: "192.168.0.141:47000", Path: "/ws"}
+conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+must(err)
+log.Println("websocket connected")
 
-	// --- Capture camera stream with H.264 ---
-	
-	x264Params, err := x264.NewParams()
-	must(err)
-	x264Params.Preset = x264.PresetMedium
-	x264Params.BitRate = 500_000
-	
-	codecSelector := mediadevices.NewCodecSelector(
-	mediadevices.WithVideoEncoders(&x264Params),
-	)
-	
-	stream, err := mediadevices.GetUserMedia(mediadevices.MediaStreamConstraints{
-		Video: func(c *mediadevices.MediaTrackConstraints) {
-			c.Width = prop.Int(640)
-			c.Height = prop.Int(480)
-			c.FrameRate = prop.Float(30)
-		},
-		Codec: codecSelector,
-	})
-	
-	must(err)
-	if err != nil {
-		log.Fatal("GetUserMedia:", err)
-	}
+// ICE handler after conn is ready
+pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+if c == nil {
+return
+}
+msg := ICECandidateMessage{
+BotID:     botId,
+Candidate: c.ToJSON(),
+}
+b, _ := json.Marshal(msg)
+conn.WriteJSON(WSMessage{Event: "iceCandidate", Data: b})
+})
 
-	// --- Add video tracks to PeerConnection ---
-	for _, t := range stream.GetVideoTracks() {
-		_, err := pc.AddTrack(t) // Track already handles H.264 encoding
-		if err != nil {
-			log.Fatal("AddTrack:", err)
-		}
-	}
+pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+log.Println("PC state:", state)
+})
 
-	// --- Data channel ---
-	dc, err := pc.CreateDataChannel("commands", nil)
-	if err != nil {
-		log.Fatal("CreateDataChannel:", err)
-	}
-	dc.OnMessage(func(msg webrtc.DataChannelMessage) {
-		log.Println("Command received:", string(msg.Data))
-	})
+// register bot
+auth := &BotAuth{
+AuthMessage: AuthMessage{Type: "bot"},
+Password:    "secret",
+Name:        "test",
+ID:          botId,
+CamID:       "cam123",
+CamName:     "Front Cam",
+}
+conn.WriteJSON(Message{Event: "registerBot", Data: auth})
+log.Println("bot registered, waiting for offers...")
 
-	// --- WebSocket listener ---
-	for {
-		_, msgBytes, err := conn.ReadMessage()
-		if err != nil {
-			log.Println("ws.ReadMessage:", err)
-			continue
-		}
+// message loop
+for {
+_, msgBytes, err := conn.ReadMessage()
+if err != nil {
+log.Println("ws.ReadMessage:", err)
+continue
+}
 
-		var ws WSMessage
-		if err := json.Unmarshal(msgBytes, &ws); err != nil {
-			log.Println("unmarshal WS message:", err)
-			continue
-		}
+var ws WSMessage
+if err := json.Unmarshal(msgBytes, &ws); err != nil {
+log.Println("unmarshal WS message:", err)
+continue
+}
 
-		switch ws.Event {
-		case "requestOffer":
-			handleRequestOffer(pc,conn,ws.Data,auth.ID)
-		case "webrtcAnswer":
-			var answer webrtc.SessionDescription
-			json.Unmarshal(ws.Data, &answer)
-			pc.SetRemoteDescription(answer)
-		case "ice":
-                       var msg ICECandidateMessage
-                      if err := json.Unmarshal(ws.Data, &msg); err != nil {
-                       log.Println("Failed to unmarshal ICE message:", err)
-                       return
-                      }
+log.Println("received event:", ws.Event)
 
-                     // Now add candidate to the right PeerConnection
-                     botId := msg.BotID
-                      // map of botId -> *webrtc.PeerConnection
-                    if pc == nil {
-                     log.Println("PeerConnection not found for bot:", botId)
-                    return
-                      } 
-
-    if err := pc.AddICECandidate(msg.Candidate); err != nil {
-        log.Println("Failed to add ICE candidate:", err)
-    } else {
-        log.Println("Added ICE candidate for bot", botId)
-    }
-		case "control":
-			var ctrl map[string]string
-			json.Unmarshal(ws.Data, &ctrl)
-			log.Println("Control command:", ctrl["command"])
-	}
+switch ws.Event {
+case "requestOffer":
+handleRequestOffer(pc, conn, ws.Data, auth.ID)
+case "ice":
+var msg ICECandidateMessage
+if err := json.Unmarshal(ws.Data, &msg); err != nil {
+log.Println("failed to unmarshal ICE:", err)
+continue
+}
+if err := pc.AddICECandidate(msg.Candidate); err != nil {
+log.Println("AddICECandidate error:", err)
+} else {
+log.Println("added ICE candidate")
+}
+case "control":
+var ctrl map[string]string
+json.Unmarshal(ws.Data, &ctrl)
+log.Println("control command:", ctrl["command"])
+}
 }
 }
