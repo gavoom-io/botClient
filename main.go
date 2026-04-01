@@ -65,6 +65,21 @@ panic(err)
 
 var botId = "09eb14ea-6b5f-42ce-b5ca-83e24ef5a828"
 
+func cleanupPeerConnection(pc *webrtc.PeerConnection) {
+    if pc == nil {
+        return
+    }
+
+    // Close the PeerConnection
+    err := pc.Close()
+    if err != nil {
+        log.Println("pc close error:", err)
+    }
+
+    // Optional: nil it so you don't reuse it
+    pc = nil
+}
+
 func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage, botId string) {
 if pc == nil {
 log.Println("ERROR: pc is nil!")
@@ -93,16 +108,12 @@ log.Println("CreateAnswer error:", err)
 return
 }
 
-gatherComplete := webrtc.GatheringCompletePromise(pc)
 
 if err := pc.SetLocalDescription(answer); err != nil {
 log.Println("SetLocalDescription error:", err)
 return
 }
 
-log.Println("waiting for ICE gathering...")
-<-gatherComplete
-log.Println("sending answer")
 
 conn.WriteJSON(Message{
 Event: "deviceAnswer",
@@ -179,7 +190,16 @@ conn.WriteJSON(WSMessage{Event: "iceCandidate", Data: b})
 })
 
 pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+
 log.Println("PC state:", state)
+
+   switch state {
+	case webrtc.PeerConnectionStateDisconnected:
+             log.Println("Peer disconnected")
+  }
+
+
+
 })
 
 // register bot
@@ -194,12 +214,19 @@ CamName:     "Front Cam",
 conn.WriteJSON(Message{Event: "registerBot", Data: auth})
 log.Println("bot registered, waiting for offers...")
 
+conn.SetCloseHandler(func(code int, text string) error {
+    log.Printf("closed with code=%d, reason=%s\n", code, text)
+    return nil
+})
+
 // message loop
 for {
 _, msgBytes, err := conn.ReadMessage()
 if err != nil {
 log.Println("ws.ReadMessage:", err)
-continue
+ conn.Close()
+ cleanupPeerConnection(pc)
+  continue
 }
 
 var ws WSMessage
@@ -228,6 +255,9 @@ case "control":
 var ctrl map[string]string
 json.Unmarshal(ws.Data, &ctrl)
 log.Println("control command:", ctrl["command"])
+
+case "userDisconnected":
+  cleanupPeerConnection(pc)
 }
 }
 }
