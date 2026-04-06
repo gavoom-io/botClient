@@ -59,6 +59,9 @@ type ICECandidateMessage struct {
 }
 
 var botId = "82065db3-003d-4e08-9e20-136bb089d795"
+var currentPC *webrtc.PeerConnection
+var currentStream mediadevices.MediaStream
+var  blocked bool
 
 func cleanupPeerConnection(pc *webrtc.PeerConnection, stream mediadevices.MediaStream) {
     if pc != nil {
@@ -81,8 +84,30 @@ func cleanupPeerConnection(pc *webrtc.PeerConnection, stream mediadevices.MediaS
     }
 }
 
-func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data json.RawMessage, botId string) {
-	var payload SDPPayload
+func handleRequestOffer(conn *websocket.Conn, data json.RawMessage, botId string,ch chan ICECandidateMessage ) {
+	 if blocked == true {
+          return
+         }
+         blocked = true
+          cleanupPeerConnection(currentPC,currentStream);
+         var payload SDPPayload
+         pc, _, err := createPeerConnectionAndStream()
+       
+        pc.OnICECandidate(func(c *webrtc.ICECandidate) {
+		if c == nil {
+			return
+		}
+		msg := ICECandidateMessage{
+			BotID:     botId,
+			Candidate: c.ToJSON(),
+		}
+		b, _ := json.Marshal(msg)
+		conn.WriteJSON(WSMessage{Event: "iceCandidate", Data: b})
+	})
+
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Println("PC state:", state)
+	})
 	if err := json.Unmarshal(data, &payload); err != nil {
 		log.Println("failed to unmarshal sdp offer:", err)
 		return
@@ -109,6 +134,16 @@ func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data js
 		return
 	}
 
+        go func() {
+        for msg := range ch {
+           
+	    if err := pc.AddICECandidate(msg.Candidate); err != nil {
+		log.Println("AddICECandidate error:", err)
+	     }
+}
+        
+    }()
+
 	conn.WriteJSON(Message{
 		Event: "deviceAnswer",
 		Data: WebRTCOfferData{
@@ -118,13 +153,14 @@ func handleRequestOffer(pc *webrtc.PeerConnection, conn *websocket.Conn, data js
 			SDP:         *pc.LocalDescription(),
 		},
 	})
+       blocked = false
 }
 
-func run() error {
-	// --- Media setup ---
-	vp8Params, err := vpx.NewVP8Params()
+func createPeerConnectionAndStream() (*webrtc.PeerConnection, mediadevices.MediaStream, error) {
+    // Create PeerConnection
+    vp8Params, err := vpx.NewVP8Params()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	vp8Params.BitRate = 500_000
 
@@ -143,8 +179,9 @@ func run() error {
 		},
 	})
 	if err != nil {
-		return err
+		return nil,nil, err
 	}
+        
 	 
         var stream mediadevices.MediaStream
 
@@ -156,17 +193,23 @@ func run() error {
 		},
 		Codec: codecSelector,
 	})
-
-        defer cleanupPeerConnection(pc,stream)
-	if err != nil {
-		return err
-	}
-
-	for _, t := range stream.GetVideoTracks() {
+        
+         for _, t := range stream.GetVideoTracks() {
 		if _, err := pc.AddTrack(t); err != nil {
-			return err
+			return nil,nil,err
 		}
 	}
+
+     currentPC = pc
+     currentStream = stream
+
+    return pc, stream, nil
+}
+
+
+func run() error {
+         //-- ice chan //
+        iceChan := make(chan ICECandidateMessage, 20)
 
 	// --- WebSocket ---
 	u := url.URL{Scheme: "ws", Host: "192.168.0.141:47000", Path: "/ws"}
@@ -174,26 +217,13 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+        defer func() {
+        conn.Close()
+        log.Println("WebSocket disconnected")
+        close(iceChan) // close the channel safely
+        }()
 
 	log.Println("websocket connected")
-
-	// ICE handler
-	pc.OnICECandidate(func(c *webrtc.ICECandidate) {
-		if c == nil {
-			return
-		}
-		msg := ICECandidateMessage{
-			BotID:     botId,
-			Candidate: c.ToJSON(),
-		}
-		b, _ := json.Marshal(msg)
-		conn.WriteJSON(WSMessage{Event: "iceCandidate", Data: b})
-	})
-
-	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-		log.Println("PC state:", state)
-	})
 
 	// register bot
 	auth := &BotAuth{
@@ -224,21 +254,19 @@ func run() error {
 		switch ws.Event {
 
 		case "requestOffer":
-			handleRequestOffer(pc, conn, ws.Data, auth.ID)
+			handleRequestOffer(conn, ws.Data, auth.ID, iceChan)
 
 		case "ice":
 			var msg ICECandidateMessage
-			if err := json.Unmarshal(ws.Data, &msg); err != nil {
+                        if err := json.Unmarshal(ws.Data, &msg); err != nil {
 				log.Println("failed ICE:", err)
 				continue
 			}
-			if err := pc.AddICECandidate(msg.Candidate); err != nil {
-				log.Println("AddICECandidate error:", err)
-			}
+                        iceChan <- msg 
 
 		case "userDisconnected":
 			log.Println("user disconnected → closing PC")
-                        cleanupPeerConnection(pc,stream)
+                        //cleanupPeerConnection(pc,stream)
 			return nil // restart session cleanly
 		}
 	}
