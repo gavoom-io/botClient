@@ -58,7 +58,7 @@ type ICECandidateMessage struct {
 	Candidate webrtc.ICECandidateInit `json:"candidate"`
 }
 
-var botId = "09eb14ea-6b5f-42ce-b5ca-83e24ef5a828"
+var botId = "82065db3-003d-4e08-9e20-136bb089d795"
 
 func cleanupPeerConnection(pc *webrtc.PeerConnection, stream mediadevices.MediaStream) {
     if pc != nil {
@@ -238,6 +238,7 @@ func run() error {
 
 		case "userDisconnected":
 			log.Println("user disconnected → closing PC")
+                        cleanupPeerConnection(pc,stream)
 			return nil // restart session cleanly
 		}
 	}
