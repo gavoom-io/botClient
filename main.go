@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/url"
+         "context"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -65,7 +66,8 @@ type BotClient struct {
 	sendChan chan Message
 	busy     bool
         restart chan struct {}
-        done chan struct {}  
+        done chan struct {}
+        cancelRTC context.CancelFunc  
 }
 
 var botId = "82065db3-003d-4e08-9e20-136bb089d795"
@@ -98,11 +100,13 @@ select {
 }
 
 func (bc *BotClient) handleRequestOffer(data json.RawMessage, iceChan chan ICECandidateMessage) {
+	ctx, cancel := context.WithCancel(context.Background())
+	bc.cancelRTC = cancel
 
-         bc.cleanup(iceChan)
 	vp8Params, err := vpx.NewVP8Params()
 	if err != nil {
 		log.Println("vp8 params error:", err)
+		cancel()
 		return
 	}
 	vp8Params.BitRate = 500_000
@@ -113,7 +117,6 @@ func (bc *BotClient) handleRequestOffer(data json.RawMessage, iceChan chan ICECa
 
 	m := &webrtc.MediaEngine{}
 	codecSelector.Populate(m)
-
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(m))
 
 	pc, err := api.NewPeerConnection(webrtc.Configuration{
@@ -123,6 +126,7 @@ func (bc *BotClient) handleRequestOffer(data json.RawMessage, iceChan chan ICECa
 	})
 	if err != nil {
 		log.Println("NewPeerConnection error:", err)
+		cancel()
 		return
 	}
 
@@ -136,12 +140,14 @@ func (bc *BotClient) handleRequestOffer(data json.RawMessage, iceChan chan ICECa
 	})
 	if err != nil {
 		log.Println("GetUserMedia error:", err)
+		cancel()
 		return
 	}
 
 	for _, t := range stream.GetVideoTracks() {
 		if _, err := pc.AddTrack(t); err != nil {
 			log.Println("AddTrack error:", err)
+			cancel()
 			return
 		}
 	}
@@ -153,60 +159,63 @@ func (bc *BotClient) handleRequestOffer(data json.RawMessage, iceChan chan ICECa
 		if c == nil {
 			return
 		}
+		select {
+		case <-ctx.Done():
+			log.Println("ICE candidate dropped, context cancelled")
+			return
+		default:
+		}
 		msg := ICECandidateMessage{
 			BotID:     bc.BotID,
 			Candidate: c.ToJSON(),
 		}
 		b, _ := json.Marshal(msg)
-		bc.sendChan <- Message{Event: "iceCandidate", Data: json.RawMessage(b)}
+		select {
+		case bc.sendChan <- Message{Event: "iceCandidate", Data: json.RawMessage(b)}:
+		case <-ctx.Done():
+			log.Println("ICE candidate dropped on send, context cancelled")
+		}
 	})
 
-        pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
-    log.Println("ICE state:", state)
-})
-
-pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
-    log.Println("PeerConnection state:", state)
-})
+	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Println("ICE state:", state)
+	})
 
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		log.Println("PC state:", state)
-
 		switch state {
 		case webrtc.PeerConnectionStateConnecting:
 			go func() {
 				time.Sleep(3 * time.Second)
 				if bc.PC != nil && bc.PC.ConnectionState() == webrtc.PeerConnectionStateConnecting {
-					log.Println("PC stuck in connecting after 3s, closing connection...")
+					log.Println("PC stuck in connecting after 3s, closing...")
 					bc.PC.Close()
 				}
 			}()
-
 		case webrtc.PeerConnectionStateFailed:
 			log.Println("PC failed, closing connection...")
+			cancel() // cancel context before any restart
 			select {
-        case bc.restart <- struct{}{}:
-            log.Println("💣 RTC failed → requesting restart")
-        default:
-            // already signaled
-        }
-
+			case bc.restart <- struct{}{}:
+				log.Println("💣 RTC failed → requesting restart")
+			default:
+			}
 		case webrtc.PeerConnectionStateDisconnected:
-			log.Println("PC disconnected, closing connection...")
+			log.Println("PC disconnected, closing...")
 			bc.PC.Close()
-		
-               case webrtc.PeerConnectionStateClosed:
-                    log.Println("connecton closed")
-                      bc.busy = false
-               case webrtc.PeerConnectionStateConnected:
-                     log.Println("state connected")
-                     bc.busy = false
-      }
+		case webrtc.PeerConnectionStateClosed:
+			log.Println("connection closed")
+			bc.busy = false
+		case webrtc.PeerConnectionStateConnected:
+			log.Println("state connected")
+			bc.busy = false
+		}
 	})
 
 	var payload SDPPayload
 	if err := json.Unmarshal(data, &payload); err != nil {
 		log.Println("failed to unmarshal sdp offer:", err)
+		cancel()
 		return
 	}
 
@@ -214,37 +223,46 @@ pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 		Type: webrtc.NewSDPType(payload.SDP.Type),
 		SDP:  payload.SDP.SDP,
 	}
-
 	if err := pc.SetRemoteDescription(offer); err != nil {
 		log.Println("SetRemoteDescription error:", err)
+		cancel()
 		return
 	}
 
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
 		log.Println("CreateAnswer error:", err)
+		cancel()
 		return
 	}
 
 	if err := pc.SetLocalDescription(answer); err != nil {
 		log.Println("SetLocalDescription error:", err)
+		cancel()
 		return
 	}
-         done:= make(chan struct{})
+
+	// ICE drain goroutine — exits when iceChan is closed or ctx is cancelled
 	go func() {
-		for msg := range iceChan {
-                   select {
-                   case <-done:
-                       return
-                   default: 
-                   }
-			if err := pc.AddICECandidate(msg.Candidate); err != nil {
-				log.Println("AddICECandidate error:", err)
+		for {
+			select {
+			case <-ctx.Done():
+				log.Println("ICE drain goroutine exiting")
+				return
+			case msg, ok := <-iceChan:
+				if !ok {
+					log.Println("iceChan closed, ICE drain exiting")
+					return
+				}
+				if err := pc.AddICECandidate(msg.Candidate); err != nil {
+					log.Println("AddICECandidate error:", err)
+				}
 			}
 		}
 	}()
 
-	bc.sendChan <- Message{
+	select {
+	case bc.sendChan <- Message{
 		Event: "deviceAnswer",
 		Data: WebRTCOfferData{
 			AuthMessage: AuthMessage{Type: "bot"},
@@ -252,10 +270,17 @@ pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
 			BotId:       bc.BotID,
 			SDP:         *pc.LocalDescription(),
 		},
+	}:
+	case <-ctx.Done():
+		log.Println("deviceAnswer dropped, context cancelled")
 	}
 }
 
 func (bc *BotClient) run() error {
+
+        if bc.cancelRTC != nil {
+        bc.cancelRTC()
+    }
 	bc.busy = false
 	iceChan := make(chan ICECandidateMessage, 20)
 	bc.sendChan = make(chan Message, 32)
@@ -263,14 +288,21 @@ func (bc *BotClient) run() error {
 	u := url.URL{Scheme: "ws", Host: "192.168.0.141:47000", Path: "/ws"}
 	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
 	if err != nil {
+		log.Println("should disconnect now")
 		return err
 	}
 
 	defer func() {
+                if bc.cancelRTC != nil {
+                bc.cancelRTC()
+                 }
+                time.Sleep(50 * time.Millisecond)
 		conn.Close()
-		close(bc.sendChan)
+                bc.cleanup(iceChan)
+		 for len(bc.sendChan) > 0 {
+                 <-bc.sendChan
+                  }
 		close(iceChan)
-		bc.cleanup(iceChan)
 		log.Println("WebSocket disconnected")
 	}()
 
@@ -298,12 +330,6 @@ func (bc *BotClient) run() error {
 
 	for {
 
-                select {
-                  case <-bc.restart:
-                  conn.Close()
-                  log.Println("🔄 restarting RTC session cleanly")
-                  return nil
-                  default:
 		_, msgBytes, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("ws.ReadMessage:", err)
@@ -325,9 +351,11 @@ func (bc *BotClient) run() error {
                             continue
                          }
                          bc.busy = true
+                         oldIceChan := iceChan 
 			 // kills old drain goroutine cleanly
 			iceChan = make(chan ICECandidateMessage, 20)
-			bc.handleRequestOffer(ws.Data, iceChan)
+                         bc.cleanup(oldIceChan)
+			go bc.handleRequestOffer(ws.Data, iceChan)
 
 		case "ice":
 			var msg ICECandidateMessage
@@ -339,10 +367,11 @@ func (bc *BotClient) run() error {
 
 		case "userDisconnected":
 			log.Println("user disconnected → closing PC")
-			bc.restart <- struct{}{}
+                        conn.Close()
 			return nil
 		}
-	}
+	
+log.Println("run exited")
 }}
 
 func main() {
