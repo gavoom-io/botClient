@@ -62,6 +62,16 @@ var peerConnection *webrtc.PeerConnection
 var stream  mediadevices.MediaStream
 
 func cleanupPeerConnection() {
+
+
+ if peerConnection != nil {
+        // Stop all senders BEFORE closing the PC
+        for _, sender := range peerConnection.GetSenders() {
+            if err := sender.Stop(); err != nil {
+                log.Println("sender stop error:", err)
+            }
+        }
+    }
          log.Println("cleaning up ")
         if stream != nil {  
          for _, t := range stream.GetVideoTracks() {
@@ -264,7 +274,7 @@ func run() error {
 		switch ws.Event {
 
 		case "requestOffer":
-                         // cleanupPeerConnection()
+                          cleanupPeerConnection()
                           pc,_ := createPeerconnection(conn) 
                           if err != nil {
                              log.Println("could not create peer connection")
